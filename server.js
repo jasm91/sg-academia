@@ -22,6 +22,12 @@ app.use((req, res, next) => {
 
 app.get('/health', (req, res) => res.json({ ok: true, version: APP_VERSION, time: new Date().toISOString() }));
 
+// Tenant en cada request de API
+app.use('/api', async (req, res, next) => {
+  try { req.tenant = await db.resolveTenant(req); if (!req.tenant) return res.status(500).json({ error: 'Sin tenant' }); next(); }
+  catch (e) { next(e); }
+});
+app.use('/api/super', require('./routes/super'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api', require('./routes/api'));
 

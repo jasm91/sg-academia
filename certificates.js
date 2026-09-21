@@ -27,7 +27,7 @@ async function issue(userId, courseId, score) {
 
 async function findByCode(code) {
   const { rows } = await q(`
-    SELECT c.code, c.score, c.issued_at, u.name AS student, co.title AS course, co.hours, co.instructor
+    SELECT c.code, c.score, c.issued_at, u.name AS student, co.title AS course, co.hours, co.instructor, co.tenant_id
     FROM certificates c JOIN users u ON u.id=c.user_id JOIN courses co ON co.id=c.course_id
     WHERE upper(c.code)=upper($1)`, [code]);
   return rows[0] || null;
@@ -37,8 +37,8 @@ function fmtDate(d) {
   return new Date(d).toLocaleDateString('es-BO', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/La_Paz' });
 }
 
-async function pdfStream(cert, baseUrl) {
-  const s = await getSettings();
+async function pdfStream(cert, baseUrl, tenantId) {
+  const s = await getSettings(tenantId || cert.tenant_id || 1);
   const verifyUrl = `${baseUrl}/#/verificar/${cert.code}`;
   const qrPng = await QRCode.toBuffer(verifyUrl, { margin: 1, width: 220 });
 

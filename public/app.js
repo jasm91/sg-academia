@@ -14,6 +14,7 @@
     const headers = Object.assign({}, opts.headers || {});
     if (!(opts.body instanceof FormData)) headers['Content-Type'] = 'application/json';
     if (state.token) headers.Authorization = 'Bearer ' + state.token;
+    if (state.tenantSlug) headers['x-tenant'] = state.tenantSlug;
     const res = await fetch('/api' + path, { method: opts.method || 'GET', headers, body: opts.body instanceof FormData ? opts.body : (opts.body ? JSON.stringify(opts.body) : undefined) });
     let data = null;
     try { data = await res.json(); } catch (_) { data = {}; }
@@ -27,7 +28,7 @@
   }
   function setSession(token, user) {
     state.token = token; state.user = user;
-    try { if (token) localStorage.setItem('sga_token', token); else localStorage.removeItem('sga_token'); } catch (_) {}
+    try { const k = 'sga_token' + (state.tenantSlug ? ':' + state.tenantSlug : ''); if (token) localStorage.setItem(k, token); else localStorage.removeItem(k); } catch (_) {}
     renderNav();
   }
   function logout(go = true) { setSession(null, null); state.me = null; if (go) location.hash = '#/'; }
@@ -59,7 +60,7 @@
     const link = (href, label) => `<a href="${href}" class="${h.startsWith(href) && href !== '#/' || h === href ? 'active' : ''}">${label}</a>`;
     let html = link('#/', 'Cursos') + link('#/verificar', 'Verificar certificado');
     if (state.user) {
-      html += link('#/mis-cursos', 'Mis cursos');
+      html += link('#/mis-cursos', 'Mis cursos') + link('#/aulas', 'Aulas');
       if (state.user.role === 'admin') html += link('#/admin', 'Admin');
       html += `<a href="#/perfil" title="${esc(state.user.email)}">${esc(state.user.name.split(' ')[0])}</a><a href="#/salir">Salir</a>`;
     } else html += link('#/login', 'Entrar') + `<a class="btn sm" href="#/registro">Crear cuenta</a>`;
@@ -115,6 +116,7 @@
 
   route(/^\/curso\/([^/]+)$/, async slug => {
     const d = await api('/courses/' + slug);
+    const aulas = await api('/courses/' + slug + '/aulas').catch(() => []);
     const { course, enrolled, curriculum, quiz, attempts, certificate, pending_order } = d;
     const pct = curriculum.total ? Math.round(curriculum.done / curriculum.total * 100) : 0;
     const passed = attempts.some(a => a.passed);
@@ -149,9 +151,11 @@
           <div class="row tight small muted">${course.instructor ? `<span>👤 ${esc(course.instructor)}</span>` : ''}<span>${curriculum.total} lecciones</span>${course.hours ? `<span>${course.hours} h</span>` : ''}</div>
           <div class="prose" style="margin-top:.8rem">${md(course.description)}</div></div></div>
         <h2 style="margin:1.4rem 0 .6rem">Contenido del curso</h2>${secs || '<div class="empty">Sin contenido todavía</div>'}
+        ${aulas.length ? `<h2 style="margin:1.4rem 0 .6rem">Aulas en vivo</h2><div class="list scroll">${aulas.filter(a => !a.is_past).concat(aulas.filter(a => a.is_past)).map(a => window.SGA.classItem ? window.SGA.classItem(a, false) : '').join('')}</div>` : ''}
       </div><div class="card" style="position:sticky;top:76px">${side}</div></div>`;
     accordion(app);
     app.querySelectorAll('[data-lesson]').forEach(el => el.addEventListener('click', () => { if (requireLogin()) location.hash = '#/leccion/' + el.dataset.lesson; }));
+    app.querySelectorAll('[data-aula]').forEach(el => el.addEventListener('click', () => { if (requireLogin()) location.hash = '#/aula/' + el.dataset.aula; }));
     const buy = $('#buy');
     if (buy) buy.addEventListener('click', async () => {
       if (!requireLogin()) return;
@@ -355,10 +359,16 @@
 
   // ---------- Boot ----------
   async function boot() {
-    try { state.token = localStorage.getItem('sga_token'); } catch (_) {}
+    try {
+      const t = new URLSearchParams(location.search).get('t');
+      if (t) sessionStorage.setItem('sga_t', t);
+      state.tenantSlug = sessionStorage.getItem('sga_t') || '';
+      state.token = localStorage.getItem('sga_token' + (state.tenantSlug ? ':' + state.tenantSlug : ''));
+    } catch (_) {}
     state.config = await api('/config');
     document.title = state.config.brand_name; $('#brandName').textContent = state.config.brand_name;
-    $('#foot').textContent = `${state.config.brand_name} · v${state.config.version}`;
+    $('#foot').innerHTML = `${esc(state.config.brand_name)} · v${esc(state.config.version)} · <a href="#/superadmin" class="muted">SG</a>`;
+    if (state.config.tenant && state.config.tenant.status === 'suspended') $('#foot').insertAdjacentHTML('afterbegin', '<div class="alert warn" style="max-width:600px;margin:0 auto 1rem">Esta academia está suspendida. Contactá a SG Bolivia.</div>');
     if (state.token) { try { const me = await api('/me'); state.user = me.user; state.me = me; } catch (_) { setSession(null, null); } }
     renderNav(); render();
   }

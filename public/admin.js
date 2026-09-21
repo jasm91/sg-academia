@@ -11,9 +11,10 @@
     return true;
   }
   function tabs(active) {
-    const t = [['', 'Resumen'], ['/cursos', 'Cursos'], ['/cobros', 'Cobros'], ['/alumnos', 'Alumnos'], ['/certificados', 'Certificados'], ['/config', 'Configuración']];
+    const t = [['', 'Resumen'], ['/cursos', 'Cursos'], ['/aulas', 'Aulas'], ['/cobros', 'Cobros'], ['/alumnos', 'Alumnos'], ['/certificados', 'Certificados'], ['/config', 'Configuración'], ['/soporte', '🛟 Soporte']];
     return `<div class="tabs">${t.map(([p, l]) => `<a href="#/admin${p}" class="${active === p ? 'active' : ''}">${l}</a>`).join('')}</div>`;
   }
+  S.adminTabs = tabs;
   function modal(html, onMount) {
     const bg = document.createElement('div'); bg.className = 'modal-bg'; bg.innerHTML = `<div class="modal">${html}</div>`;
     bg.addEventListener('click', e => { if (e.target === bg) bg.remove(); });

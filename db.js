@@ -13,6 +13,18 @@ const pool = new Pool({
 const q = (text, params) => pool.query(text, params);
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS tenants (
+  id SERIAL PRIMARY KEY,
+  slug TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  domain TEXT UNIQUE,                 -- host propio (p.ej. academia.isam.edu.bo)
+  status TEXT NOT NULL DEFAULT 'active', -- active | trial | suspended
+  plan TEXT DEFAULT 'base',
+  monthly_fee_bs NUMERIC(10,2) DEFAULT 0,
+  billing_next_due DATE,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
@@ -131,6 +143,54 @@ CREATE TABLE IF NOT EXISTS orders (
   payment_info JSONB,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS classrooms (
+  id SERIAL PRIMARY KEY,
+  course_id INT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT,
+  starts_at TIMESTAMPTZ NOT NULL,
+  duration_min INT NOT NULL DEFAULT 60,
+  mode TEXT NOT NULL DEFAULT 'jitsi',        -- jitsi | youtube | cloudflare | meet | zoom | url
+  join_ref TEXT,                              -- id de YouTube / UID de Cloudflare / URL de Meet-Zoom-otro
+  room_name TEXT,                             -- sala Jitsi (se genera)
+  status TEXT NOT NULL DEFAULT 'scheduled',   -- scheduled | live | ended | cancelled
+  recording_lesson_id INT REFERENCES lessons(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS classroom_attendance (
+  classroom_id INT NOT NULL REFERENCES classrooms(id) ON DELETE CASCADE,
+  user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  joined_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (classroom_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_classrooms_course ON classrooms(course_id, starts_at);
+CREATE TABLE IF NOT EXISTS tenant_settings (
+  tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  value TEXT,
+  PRIMARY KEY (tenant_id, key)
+);
+CREATE TABLE IF NOT EXISTS support_sessions (
+  id SERIAL PRIMARY KEY,
+  tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  requested_by INT REFERENCES users(id) ON DELETE SET NULL,
+  room_name TEXT NOT NULL,
+  topic TEXT,
+  status TEXT NOT NULL DEFAULT 'open', -- open | closed
+  created_at TIMESTAMPTZ DEFAULT now(),
+  closed_at TIMESTAMPTZ
+);
+-- Multi-tenant: columnas y unicidades por tenant (idempotente)
+INSERT INTO tenants(id,slug,name,status) VALUES (1,'default','SG Academia','active') ON CONFLICT (id) DO NOTHING;
+SELECT setval('tenants_id_seq', GREATEST((SELECT max(id) FROM tenants), 1));
+ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id INT NOT NULL DEFAULT 1 REFERENCES tenants(id) ON DELETE CASCADE;
+ALTER TABLE courses ADD COLUMN IF NOT EXISTS tenant_id INT NOT NULL DEFAULT 1 REFERENCES tenants(id) ON DELETE CASCADE;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_email_key;
+CREATE UNIQUE INDEX IF NOT EXISTS users_tenant_email_uq ON users(tenant_id, lower(email));
+ALTER TABLE courses DROP CONSTRAINT IF EXISTS courses_slug_key;
+CREATE UNIQUE INDEX IF NOT EXISTS courses_tenant_slug_uq ON courses(tenant_id, slug);
+CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_courses_tenant ON courses(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_qr ON orders(qr_id);
 CREATE INDEX IF NOT EXISTS idx_lessons_section ON lessons(section_id);
@@ -154,17 +214,40 @@ async function migrate() {
   }
 }
 
-async function getSettings() {
+// Settings: defaults globales (tabla settings) + override por tenant (tenant_settings)
+async function getSettings(tenantId = 1) {
   const { rows } = await q('SELECT key, value FROM settings');
   const s = {};
   for (const r of rows) s[r.key] = r.value;
+  const t = await q('SELECT key, value FROM tenant_settings WHERE tenant_id=$1', [tenantId]);
+  for (const r of t.rows) s[r.key] = r.value;
   return s;
 }
 
-async function setSettings(obj) {
+async function setSettings(obj, tenantId = 1) {
   for (const [k, v] of Object.entries(obj)) {
-    await q('INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value', [k, v == null ? '' : String(v)]);
+    await q('INSERT INTO tenant_settings(tenant_id,key,value) VALUES($1,$2,$3) ON CONFLICT (tenant_id,key) DO UPDATE SET value=EXCLUDED.value', [tenantId, k, v == null ? '' : String(v)]);
   }
 }
 
-module.exports = { pool, q, migrate, getSettings, setSettings };
+// Resolución de tenant: header x-tenant (slug) > host propio > default (id 1). Cache 60 s.
+let tenantCache = { at: 0, bySlug: new Map(), byHost: new Map(), byId: new Map() };
+async function loadTenants() {
+  if (Date.now() - tenantCache.at < 60000) return tenantCache;
+  const { rows } = await q('SELECT * FROM tenants');
+  const c = { at: Date.now(), bySlug: new Map(), byHost: new Map(), byId: new Map() };
+  for (const t of rows) { c.bySlug.set(t.slug, t); c.byId.set(t.id, t); if (t.domain) c.byHost.set(t.domain.toLowerCase(), t); }
+  tenantCache = c;
+  return c;
+}
+function invalidateTenants() { tenantCache.at = 0; }
+async function resolveTenant(req) {
+  const c = await loadTenants();
+  const slug = (req.headers['x-tenant'] || req.query.t || '').toString().trim().toLowerCase();
+  if (slug && c.bySlug.has(slug)) return c.bySlug.get(slug);
+  const host = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().split(':')[0].toLowerCase();
+  if (host && c.byHost.has(host)) return c.byHost.get(host);
+  return c.byId.get(1) || c.bySlug.values().next().value;
+}
+
+module.exports = { pool, q, migrate, getSettings, setSettings, resolveTenant, invalidateTenants };

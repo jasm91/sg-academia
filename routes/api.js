@@ -7,6 +7,7 @@ const { embedFor } = require('../video');
 const payments = require('../payments');
 const certs = require('../certificates');
 const baneco = require('../baneco');
+const live = require('../live');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024 } });
@@ -18,9 +19,10 @@ function baseUrl(req) {
 
 // ---------- Config pública ----------
 router.get('/config', wrap(async (req, res) => {
-  const s = await getSettings();
+  const s = await getSettings(req.tenant.id);
   res.json({
-    brand_name: s.brand_name, brand_tagline: s.brand_tagline, currency: s.currency,
+    tenant: { id: req.tenant.id, slug: req.tenant.slug, name: req.tenant.name, status: req.tenant.status },
+    brand_name: s.brand_name === 'SG Academia' && req.tenant.id !== 1 ? req.tenant.name : s.brand_name, brand_tagline: s.brand_tagline, currency: s.currency,
     support_whatsapp: s.support_whatsapp,
     payment_mode: baneco.isConfigured() ? 'qr_baneco' : 'manual',
     manual_instructions: s.manual_instructions,
@@ -35,23 +37,24 @@ router.post('/auth/register', wrap(async (req, res) => {
   if (!name || !email || !password) return res.status(400).json({ error: 'Nombre, email y contraseña son obligatorios' });
   if (String(password).length < 6) return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
   const em = String(email).trim().toLowerCase();
-  const dup = await q('SELECT id FROM users WHERE email=$1', [em]);
+  if (req.tenant.status === 'suspended') return res.status(403).json({ error: 'Esta academia está suspendida' });
+  const dup = await q('SELECT id FROM users WHERE tenant_id=$2 AND lower(email)=$1', [em, req.tenant.id]);
   if (dup.rows.length) return res.status(409).json({ error: 'Ese email ya está registrado' });
-  const { rows } = await q('INSERT INTO users(email,password_hash,name,phone) VALUES($1,$2,$3,$4) RETURNING id,email,name,role,phone',
-    [em, await auth.hash(password), String(name).trim(), phone || null]);
+  const { rows } = await q('INSERT INTO users(email,password_hash,name,phone,tenant_id) VALUES($1,$2,$3,$4,$5) RETURNING id,email,name,role,phone,tenant_id',
+    [em, await auth.hash(password), String(name).trim(), phone || null, req.tenant.id]);
   res.json({ token: auth.sign(rows[0]), user: rows[0] });
 }));
 
 router.post('/auth/login', wrap(async (req, res) => {
   const { email, password } = req.body || {};
-  const { rows } = await q('SELECT * FROM users WHERE email=$1', [String(email || '').trim().toLowerCase()]);
+  const { rows } = await q('SELECT * FROM users WHERE tenant_id=$2 AND lower(email)=$1', [String(email || '').trim().toLowerCase(), req.tenant.id]);
   const u = rows[0];
   if (!u || !(await auth.verify(String(password || ''), u.password_hash))) return res.status(401).json({ error: 'Email o contraseña incorrectos' });
   res.json({ token: auth.sign(u), user: { id: u.id, email: u.email, name: u.name, role: u.role, phone: u.phone } });
 }));
 
 router.get('/me', auth.requireAuth, wrap(async (req, res) => {
-  const u = (await q('SELECT id,email,name,role,phone,created_at FROM users WHERE id=$1', [req.user.id])).rows[0];
+  const u = (await q('SELECT id,email,name,role,phone,created_at FROM users WHERE id=$1 AND tenant_id=$2', [req.user.id, req.tenant.id])).rows[0];
   if (!u) return res.status(401).json({ error: 'Usuario no existe' });
   const enrollments = (await q(`
     SELECT e.course_id, e.created_at, c.slug, c.title, c.cover_url, c.subtitle,
@@ -81,12 +84,12 @@ router.get('/courses', wrap(async (req, res) => {
     SELECT c.id,c.slug,c.title,c.subtitle,c.cover_url,c.price_bs,c.instructor,c.hours,
       (SELECT count(*) FROM lessons l JOIN sections s ON s.id=l.section_id WHERE s.course_id=c.id) AS lessons,
       (SELECT count(*) FROM enrollments e WHERE e.course_id=c.id) AS students
-    FROM courses c WHERE c.published ORDER BY c.sort_order, c.id`);
+    FROM courses c WHERE c.published AND c.tenant_id=$1 ORDER BY c.sort_order, c.id`, [req.tenant.id]);
   res.json(rows);
 }));
 
-async function loadCourse(slug) {
-  const { rows } = await q('SELECT * FROM courses WHERE slug=$1', [slug]);
+async function loadCourse(slug, tenantId) {
+  const { rows } = await q('SELECT * FROM courses WHERE slug=$1 AND tenant_id=$2', [slug, tenantId]);
   return rows[0] || null;
 }
 
@@ -109,7 +112,7 @@ async function curriculum(courseId, userId) {
 }
 
 router.get('/courses/:slug', auth.optionalAuth, wrap(async (req, res) => {
-  const c = await loadCourse(req.params.slug);
+  const c = await loadCourse(req.params.slug, req.tenant.id);
   if (!c || (!c.published && (!req.user || req.user.role !== 'admin'))) return res.status(404).json({ error: 'Curso no encontrado' });
   const uid = req.user && req.user.id;
   const enrolled = uid ? (req.user.role === 'admin' || await isEnrolled(uid, c.id)) : false;
@@ -131,6 +134,8 @@ router.get('/lessons/:id', auth.requireAuth, wrap(async (req, res) => {
     FROM lessons l JOIN sections s ON s.id=l.section_id JOIN courses c ON c.id=s.course_id WHERE l.id=$1`, [req.params.id]);
   const l = rows[0];
   if (!l) return res.status(404).json({ error: 'Lección no encontrada' });
+  const owner = (await q('SELECT tenant_id FROM courses WHERE id=$1', [l.course_id])).rows[0];
+  if (!owner || owner.tenant_id !== req.tenant.id) return res.status(404).json({ error: 'Lección no encontrada' });
   const ok = req.user.role === 'admin' || l.is_preview || await isEnrolled(req.user.id, l.course_id);
   if (!ok) return res.status(403).json({ error: 'Necesitás inscribirte para ver esta lección' });
   const prog = (await q('SELECT completed,seconds FROM lesson_progress WHERE user_id=$1 AND lesson_id=$2', [req.user.id, l.id])).rows[0] || { completed: false, seconds: 0 };
@@ -151,7 +156,7 @@ router.post('/lessons/:id/progress', auth.requireAuth, wrap(async (req, res) => 
 
 // ---------- Quiz ----------
 async function quizAccess(req, res) {
-  const c = await loadCourse(req.params.slug);
+  const c = await loadCourse(req.params.slug, req.tenant.id);
   if (!c) { res.status(404).json({ error: 'Curso no encontrado' }); return null; }
   if (req.user.role !== 'admin' && !(await isEnrolled(req.user.id, c.id))) { res.status(403).json({ error: 'No estás inscripto' }); return null; }
   const quiz = (await q('SELECT * FROM quizzes WHERE course_id=$1', [c.id])).rows[0];
@@ -203,7 +208,7 @@ router.post('/courses/:slug/quiz/attempt', auth.requireAuth, wrap(async (req, re
 
 // ---------- Compra ----------
 router.post('/courses/:slug/order', auth.requireAuth, wrap(async (req, res) => {
-  const c = await loadCourse(req.params.slug);
+  const c = await loadCourse(req.params.slug, req.tenant.id);
   if (!c || !c.published) return res.status(404).json({ error: 'Curso no encontrado' });
   if (await isEnrolled(req.user.id, c.id)) return res.status(400).json({ error: 'Ya estás inscripto', enrolled: true });
   if (Number(c.price_bs) <= 0) { await payments.enroll(req.user.id, c.id, 'free'); return res.json({ enrolled: true, free: true }); }
@@ -263,8 +268,63 @@ router.get('/certificates/:code/pdf', wrap(async (req, res) => {
   if (!c) return res.status(404).json({ error: 'Certificado no encontrado' });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="certificado-${c.code}.pdf"`);
-  const doc = await certs.pdfStream(c, baseUrl(req));
+  const doc = await certs.pdfStream(c, baseUrl(req), c.tenant_id);
   doc.pipe(res);
+}));
+
+// ---------- Aulas en vivo (alumno) ----------
+function classroomView(c, uid) {
+  const w = live.window(c);
+  return { id: c.id, course_id: c.course_id, course_title: c.course_title, slug: c.slug, title: c.title, description: c.description, starts_at: c.starts_at, duration_min: c.duration_min, mode: c.mode, status: c.status,
+    recording_lesson_id: c.recording_lesson_id, attended: !!c.attended, can_join: w.canJoin, is_past: w.isPast, opens_at: w.opensAt, ends_at: w.endsAt };
+}
+
+router.get('/me/aulas', auth.requireAuth, wrap(async (req, res) => {
+  const admin = req.user.role === 'admin';
+  const { rows } = await q(`
+    SELECT cl.*, co.title AS course_title, co.slug, (a.user_id IS NOT NULL) AS attended
+    FROM classrooms cl JOIN courses co ON co.id=cl.course_id
+    LEFT JOIN classroom_attendance a ON a.classroom_id=cl.id AND a.user_id=$1
+    WHERE cl.status <> 'cancelled' AND (${admin ? 'true' : 'EXISTS (SELECT 1 FROM enrollments e WHERE e.user_id=$1 AND e.course_id=cl.course_id)'})
+    ORDER BY cl.starts_at DESC LIMIT 200`, [req.user.id]);
+  const list = rows.map(c => classroomView(c, req.user.id));
+  res.json({ upcoming: list.filter(c => !c.is_past).sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at)), past: list.filter(c => c.is_past) });
+}));
+
+router.get('/courses/:slug/aulas', auth.optionalAuth, wrap(async (req, res) => {
+  const c = await loadCourse(req.params.slug, req.tenant.id);
+  if (!c) return res.status(404).json({ error: 'Curso no encontrado' });
+  const uid = req.user ? req.user.id : 0;
+  const { rows } = await q(`SELECT cl.*, $2::text AS course_title, $3::text AS slug, (a.user_id IS NOT NULL) AS attended FROM classrooms cl
+    LEFT JOIN classroom_attendance a ON a.classroom_id=cl.id AND a.user_id=$4
+    WHERE cl.course_id=$1 AND cl.status <> 'cancelled' ORDER BY cl.starts_at`, [c.id, c.title, c.slug, uid]);
+  res.json(rows.map(r => classroomView(r, uid)));
+}));
+
+router.get('/aulas/:id', auth.requireAuth, wrap(async (req, res) => {
+  const { rows } = await q('SELECT cl.*, co.title AS course_title, co.slug, co.tenant_id FROM classrooms cl JOIN courses co ON co.id=cl.course_id WHERE cl.id=$1', [req.params.id]);
+  const c = rows[0];
+  if (!c || c.tenant_id !== req.tenant.id) return res.status(404).json({ error: 'Aula no encontrada' });
+  const admin = req.user.role === 'admin';
+  if (!admin && !(await isEnrolled(req.user.id, c.course_id))) return res.status(403).json({ error: 'Necesitás estar inscripto en el curso' });
+  const att = await q('SELECT 1 FROM classroom_attendance WHERE classroom_id=$1 AND user_id=$2', [c.id, req.user.id]);
+  c.attended = att.rows.length > 0;
+  res.json(classroomView(c, req.user.id));
+}));
+
+router.post('/aulas/:id/join', auth.requireAuth, wrap(async (req, res) => {
+  const { rows } = await q('SELECT cl.*, co.title AS course_title, co.slug, co.tenant_id FROM classrooms cl JOIN courses co ON co.id=cl.course_id WHERE cl.id=$1', [req.params.id]);
+  const c = rows[0];
+  if (!c || c.tenant_id !== req.tenant.id) return res.status(404).json({ error: 'Aula no encontrada' });
+  const admin = req.user.role === 'admin';
+  if (!admin && !(await isEnrolled(req.user.id, c.course_id))) return res.status(403).json({ error: 'Necesitás estar inscripto en el curso' });
+  const w = live.window(c);
+  if (!admin && !w.canJoin) return res.status(403).json({ error: w.isPast ? 'Esta aula ya terminó' : `El aula abre el ${new Date(w.opensAt).toLocaleString('es-BO', { timeZone: 'America/La_Paz' })}` });
+  if (!c.room_name && c.mode === 'jitsi') { c.room_name = live.roomName(c); await q('UPDATE classrooms SET room_name=$2 WHERE id=$1', [c.id, c.room_name]); }
+  await q('INSERT INTO classroom_attendance(classroom_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING', [c.id, req.user.id]);
+  if (admin && c.status === 'scheduled') await q("UPDATE classrooms SET status='live' WHERE id=$1", [c.id]);
+  const u = (await q('SELECT id,name,email FROM users WHERE id=$1', [req.user.id])).rows[0];
+  res.json({ classroom: classroomView(c, req.user.id), join: live.joinPayload(c, u, admin, req.headers['x-forwarded-host'] || req.get('host')) });
 }));
 
 module.exports = router;

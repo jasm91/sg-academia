@@ -53,6 +53,43 @@ async function call(path, { method = 'GET', body, token } = {}) {
   const qn = (await call('/admin/quizzes/' + full.quiz.id + '/questions', { method: 'POST', token: at, body: { text: '¿2+2?', kind: 'single', options: ['3', '4'], correct: [1] } })).data; ok(qn.id, 'crear pregunta');
   const free = (await call('/courses/' + nc.slug + '/order', { method: 'POST', token: st })).data; ok(free.enrolled && free.free, 'inscripción gratuita directa');
   const dc = await call('/admin/courses/' + nc.id, { method: 'DELETE', token: at }); ok(dc.status === 200, 'eliminar curso');
+
+  // ---- Aulas en vivo ----
+  const inMin = m => new Date(Date.now() + m * 60000).toISOString();
+  const aula = (await call('/admin/aulas', { method: 'POST', token: at, body: { course_id: courses[0].id, title: 'Clase en vivo', starts_at: inMin(5), duration_min: 30, mode: 'jitsi' } })).data; ok(aula.id && aula.room_name, 'crear aula jitsi (abre en 5 min)');
+  const yt = (await call('/admin/aulas', { method: 'POST', token: at, body: { course_id: courses[0].id, title: 'Clase YouTube', starts_at: inMin(120), duration_min: 30, mode: 'youtube', join_ref: 'https://youtu.be/ysz5S6PUM-U' } })).data; ok(yt.id, 'crear aula youtube (en 2 h)');
+  const mine = (await call('/me/aulas', { token: st })).data; ok(mine.upcoming.length === 2, `alumno ve ${mine.upcoming.length} aulas próximas`);
+  const j1 = await call('/aulas/' + aula.id + '/join', { method: 'POST', token: st }); ok(j1.status === 200 && j1.data.join.domain && j1.data.join.room, `alumno entra al aula jitsi (${j1.data.join.provider})`);
+  const j2 = await call('/aulas/' + yt.id + '/join', { method: 'POST', token: st }); ok(j2.status === 403, 'aula futura bloqueada (abre 15 min antes)');
+  const ja = await call('/aulas/' + yt.id + '/join', { method: 'POST', token: at }); ok(ja.status === 200 && ja.data.join.video, 'admin entra igual (youtube embed)');
+  const att = (await call('/admin/aulas/' + aula.id + '/asistencia', { token: at })).data; ok(att.length === 1, 'asistencia registrada');
+  const rec = (await call('/admin/aulas/' + aula.id + '/grabacion', { method: 'POST', token: at, body: { provider: 'youtube', video_ref: 'ysz5S6PUM-U' } })).data; ok(rec.lesson && rec.lesson.id, 'grabación publicada como lección');
+  const caulas = (await call('/courses/' + slug + '/aulas', { token: st })).data; ok(caulas.some(a => a.recording_lesson_id === rec.lesson.id), 'aula del curso muestra grabación');
+  // ---- Soporte en vivo ----
+  const sup = (await call('/admin/support', { method: 'POST', token: at, body: { topic: 'no carga el video' } })).data; ok(sup.session && sup.session.status === 'open' && sup.join.room, 'admin abre sesión de soporte');
+  // ---- Superadmin ----
+  const sl = await call('/super/login', { method: 'POST', body: { token: process.env.SUPER_TOKEN || 'supertest' } }); ok(sl.status === 200 && sl.data.token, 'login superadmin');
+  const sk = sl.data.token;
+  const noSuper = await call('/super/tenants', { token: st }); ok(noSuper.status === 401, 'alumno no entra al superadmin');
+  const ov = (await call('/super/overview', { token: sk })).data; ok(ov.tenants >= 1 && ov.open_support >= 1, `overview: ${ov.tenants} tenants, ${ov.open_support} soporte abierto`);
+  const ss = (await call('/super/support', { token: sk })).data; ok(ss.some(x => x.id === sup.session.id && x.status === 'open'), 'superadmin ve la sesión de soporte');
+  const sj = (await call('/super/support/' + sup.session.id + '/join', { method: 'POST', token: sk })).data; ok(sj.join.room === sup.join.room && sj.join.moderator, 'superadmin entra a la MISMA sala como moderador');
+  await call('/super/support/' + sup.session.id + '/close', { method: 'POST', token: sk });
+  const supAfter = (await call('/admin/support', { token: at })).data; ok(!supAfter.session, 'sesión cerrada por superadmin');
+  const tn = (await call('/super/tenants', { method: 'POST', token: sk, body: { name: 'Instituto Prueba', slug: 'prueba', admin_email: 'admin@prueba.bo', admin_name: 'Dir. Prueba', admin_password: 'prueba123' } })).data; ok(tn.tenant && tn.tenant.slug === 'prueba' && tn.admin, 'tenant nuevo creado con admin');
+  const H = { 'x-tenant': 'prueba' };
+  const callT = (path, o = {}) => fetch(BASE + '/api' + path, { method: o.method || 'GET', headers: { 'Content-Type': 'application/json', ...H, ...(o.token ? { Authorization: 'Bearer ' + o.token } : {}) }, body: o.body ? JSON.stringify(o.body) : undefined }).then(async r => ({ status: r.status, data: await r.json() }));
+  const cfgT = (await callT('/config')).data; ok(cfgT.tenant.slug === 'prueba' && cfgT.brand_name === 'Instituto Prueba', 'config del tenant por header x-tenant');
+  const lt = await callT('/auth/login', { method: 'POST', body: { email: 'admin@prueba.bo', password: 'prueba123' } }); ok(lt.status === 200 && lt.data.user.role === 'admin', 'login admin del tenant');
+  const cross = await callT('/auth/login', { method: 'POST', body: { email: 'admin@sg-academia.local', password: 'admin1234' } }); ok(cross.status === 401, 'admin del tenant 1 NO entra en tenant prueba');
+  const crossTok = await callT('/admin/dashboard', { token: at }); ok(crossTok.status === 401, 'token del tenant 1 rechazado en tenant prueba');
+  const emptyCat = (await callT('/courses')).data; ok(emptyCat.length === 0, 'catálogo del tenant nuevo vacío (aislado)');
+  const cT = (await callT('/admin/courses', { method: 'POST', token: lt.data.token, body: { title: 'Curso demo', price_bs: 50, published: true } })).data; ok(cT.id && cT.slug === 'curso-demo', 'mismo slug permitido en otro tenant');
+  const leak = await call('/admin/courses/' + cT.id + '/full', { token: at }); ok(leak.status === 404, 'tenant 1 no ve cursos del tenant prueba');
+  const imp = (await call('/super/tenants/' + tn.tenant.id + '/impersonate', { method: 'POST', token: sk })).data; ok(imp.token && imp.slug === 'prueba', 'impersonate devuelve token del tenant');
+  const impDash = await callT('/admin/dashboard', { token: imp.token }); ok(impDash.status === 200, 'token impersonado funciona en el tenant');
+  await call('/super/tenants/' + tn.tenant.id, { method: 'DELETE', token: sk });
+  const gone = (await call('/super/tenants', { token: sk })).data; ok(!gone.some(x => x.slug === 'prueba'), 'tenant eliminado');
   console.log(`\n${pass} OK, ${fail} fallos`);
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error('ERROR', e); process.exit(1); });
