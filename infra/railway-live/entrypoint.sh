@@ -23,6 +23,7 @@ allow-loopback-peers
 CONF
 turnserver -c /turnserver.conf --log-file=stdout --simple-log &
 caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
+MUX_PORT=9000 mux &
 if [ -n "${LIVE_SELFTEST:-}" ]; then
   ( sleep 5; while true; do ffmpeg -hide_banner -loglevel error -re -f lavfi -i "testsrc2=size=854x480:rate=25" -f lavfi -i "sine=frequency=440" -c:v libx264 -preset veryfast -tune zerolatency -g 50 -pix_fmt yuv420p -c:a aac -ar 44100 -f flv "rtmp://127.0.0.1:1935/${LIVE_SELFTEST}"; sleep 5; done ) &
 fi
