@@ -190,6 +190,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS users_tenant_email_uq ON users(tenant_id, lowe
 ALTER TABLE courses DROP CONSTRAINT IF EXISTS courses_slug_key;
 CREATE UNIQUE INDEX IF NOT EXISTS courses_tenant_slug_uq ON courses(tenant_id, slug);
 CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
+ALTER TABLE classrooms ADD COLUMN IF NOT EXISTS stream_key TEXT;
+ALTER TABLE classrooms ADD COLUMN IF NOT EXISTS recording_url TEXT;
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id SERIAL PRIMARY KEY,
+  classroom_id INT NOT NULL REFERENCES classrooms(id) ON DELETE CASCADE,
+  user_id INT REFERENCES users(id) ON DELETE SET NULL,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'student',
+  text TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_chat_classroom ON chat_messages(classroom_id, id);
 CREATE INDEX IF NOT EXISTS idx_courses_tenant ON courses(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_qr ON orders(qr_id);

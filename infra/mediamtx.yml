@@ -1,0 +1,61 @@
+# MediaMTX · SG Academia. Auth y eventos delegados a la app (LMS_URL, LIVE_SECRET).
+logLevel: info
+api: yes
+apiAddress: 127.0.0.1:9997
+
+authMethod: http
+authHTTPAddress: http://lms.invalid/api/hooks/live/auth   # se sobreescribe con MTX_AUTHHTTPADDRESS (docker-compose)
+authHTTPExclude:
+  - action: api
+  - action: metrics
+  - action: pprof
+
+rtsp: yes
+rtspAddress: 127.0.0.1:8554   # solo interno, para el relay de audio a Opus
+rtspTransports: [tcp]
+rtmp: yes
+rtmpAddress: :1935
+srt: yes
+srtAddress: :8890
+
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsAllowOrigins: ['*']
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigins: ['*']
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcIPsFromInterfaces: no
+webrtcAdditionalHosts: []   # se sobreescribe con MTX_WEBRTCADDITIONALHOSTS (docker-compose)
+webrtcICEServers2:
+  - url: stun:stun.l.google.com:19302
+
+pathDefaults:
+  record: yes
+  recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordSegmentDuration: 6h
+  recordDeleteAfter: 720h
+  runOnAvailable: /hooks/event.sh ready
+  runOnUnavailable: /hooks/event.sh notready
+  runOnRecordSegmentComplete: /hooks/event.sh segment
+
+paths:
+  # Aula: ingesta desde OBS (RTMP/SRT/WHIP). Se graba. Relay a <aula>rtc con audio Opus para WebRTC.
+  ~^aula\d+$:
+    runOnAvailable: /hooks/relay.sh        # avisa 'ready' a la app y lanza el relay Opus
+    runOnAvailableRestart: yes
+  # Copia WebRTC-compatible (H264 copy + Opus): no se graba ni dispara eventos
+  ~^aula\d+rtc$:
+    record: no
+    runOnAvailable: ''
+    runOnUnavailable: ''
+    runOnRecordSegmentComplete: ''
+moq: no

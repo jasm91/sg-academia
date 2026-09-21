@@ -42,7 +42,7 @@ router.get('/overview', wrap(async (req, res) => {
     sales_total: Number((await one("SELECT coalesce(sum(amount_bs),0) s FROM orders WHERE status='paid'")).s),
     pending_orders: Number((await one("SELECT count(*) c FROM orders WHERE status='pending'")).c),
     open_support: Number((await one("SELECT count(*) c FROM support_sessions WHERE status='open'")).c),
-    integrations: { baneco: baneco.isConfigured(), jaas: live.jaasReady(), bunny: !!process.env.BUNNY_LIBRARY_ID, cloudflare_live: !!process.env.CF_STREAM_CUSTOMER_CODE },
+    integrations: { baneco: baneco.isConfigured(), jitsi: live.jitsiProvider(), jitsi_domain: process.env.JITSI_DOMAIN || null, stream: live.streamReady(), live_domain: live.LIVE().domain || null, jaas: live.jaasReady(), bunny: !!process.env.BUNNY_LIBRARY_ID, cloudflare_live: !!process.env.CF_STREAM_CUSTOMER_CODE },
     db: (await one('SELECT pg_size_pretty(pg_database_size(current_database())) s')).s,
   });
 }));

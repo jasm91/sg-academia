@@ -1,0 +1,38 @@
+{
+  email {$LETSENCRYPT_EMAIL}
+}
+
+# ---- Jitsi propio ----
+{$MEET_DOMAIN} {
+  encode gzip
+  reverse_proxy web:80
+}
+
+# ---- Transmisión propia (MediaMTX) ----
+{$LIVE_DOMAIN} {
+  encode gzip
+  header Access-Control-Allow-Origin "*"
+  header Access-Control-Allow-Headers "*"
+  header Access-Control-Allow-Methods "GET, POST, PATCH, DELETE, OPTIONS"
+  @options method OPTIONS
+  respond @options 204
+
+  # grabaciones (mp4) — servidas estáticas
+  handle_path /rec/* {
+    root * /srv/recordings
+    file_server
+  }
+  # WebRTC: WHEP (alumnos) y WHIP (publicar desde navegador)
+  @webrtc path_regexp ^/[^/]+/(whep|whip)(/.*)?$
+  handle @webrtc {
+    reverse_proxy mediamtx:8889
+  }
+  # HLS: playlists y segmentos
+  @hls path_regexp \.(m3u8|mp4|ts|m4s)$
+  handle @hls {
+    reverse_proxy mediamtx:8888
+  }
+  handle {
+    respond "SG Academia · live" 200
+  }
+}

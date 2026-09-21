@@ -276,7 +276,7 @@ router.get('/certificates/:code/pdf', wrap(async (req, res) => {
 function classroomView(c, uid) {
   const w = live.window(c);
   return { id: c.id, course_id: c.course_id, course_title: c.course_title, slug: c.slug, title: c.title, description: c.description, starts_at: c.starts_at, duration_min: c.duration_min, mode: c.mode, status: c.status,
-    recording_lesson_id: c.recording_lesson_id, attended: !!c.attended, can_join: w.canJoin, is_past: w.isPast, opens_at: w.opensAt, ends_at: w.endsAt };
+    recording_lesson_id: c.recording_lesson_id, recording_url: c.recording_url || null, attended: !!c.attended, can_join: w.canJoin, is_past: w.isPast, opens_at: w.opensAt, ends_at: w.endsAt };
 }
 
 router.get('/me/aulas', auth.requireAuth, wrap(async (req, res) => {
@@ -325,6 +325,41 @@ router.post('/aulas/:id/join', auth.requireAuth, wrap(async (req, res) => {
   if (admin && c.status === 'scheduled') await q("UPDATE classrooms SET status='live' WHERE id=$1", [c.id]);
   const u = (await q('SELECT id,name,email FROM users WHERE id=$1', [req.user.id])).rows[0];
   res.json({ classroom: classroomView(c, req.user.id), join: live.joinPayload(c, u, admin, req.headers['x-forwarded-host'] || req.get('host')) });
+}));
+
+// ---------- Chat en vivo de un aula (SSE + POST) ----------
+async function chatAccess(req, res) {
+  const c = (await q('SELECT cl.*, co.tenant_id FROM classrooms cl JOIN courses co ON co.id=cl.course_id WHERE cl.id=$1', [req.params.id])).rows[0];
+  if (!c || c.tenant_id !== req.tenant.id) { res.status(404).json({ error: 'Aula no encontrada' }); return null; }
+  if (req.user.role !== 'admin' && !(await isEnrolled(req.user.id, c.course_id))) { res.status(403).json({ error: 'No estás inscripto' }); return null; }
+  return c;
+}
+const presence = new Map(); // classroom_id -> Set(res)
+router.get('/aulas/:id/chat', auth.requireAuth, wrap(async (req, res) => {
+  const c = await chatAccess(req, res); if (!c) return;
+  const { rows } = await q('SELECT id,user_id,name,role,text,created_at FROM chat_messages WHERE classroom_id=$1 ORDER BY id DESC LIMIT 60', [c.id]);
+  res.json({ messages: rows.reverse(), viewers: (presence.get(c.id) || new Set()).size, status: c.status });
+}));
+router.get('/aulas/:id/chat/stream', auth.requireAuth, wrap(async (req, res) => {
+  const c = await chatAccess(req, res); if (!c) return;
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  res.write(':ok\n\n');
+  if (!presence.has(c.id)) presence.set(c.id, new Set());
+  const set = presence.get(c.id); set.add(res);
+  const send = ev => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+  const key = `aula:${c.id}`;
+  live.bus.on(key, send);
+  live.bus.emit(key, { type: 'presence', viewers: set.size });
+  const ping = setInterval(() => res.write(':ping\n\n'), 25000);
+  req.on('close', () => { clearInterval(ping); live.bus.off(key, send); set.delete(res); live.bus.emit(key, { type: 'presence', viewers: set.size }); });
+}));
+router.post('/aulas/:id/chat', auth.requireAuth, wrap(async (req, res) => {
+  const c = await chatAccess(req, res); if (!c) return;
+  const text = String((req.body && req.body.text) || '').trim().slice(0, 500);
+  if (!text) return res.status(400).json({ error: 'Mensaje vacío' });
+  const { rows } = await q('INSERT INTO chat_messages(classroom_id,user_id,name,role,text) VALUES($1,$2,$3,$4,$5) RETURNING id,user_id,name,role,text,created_at', [c.id, req.user.id, req.user.name, req.user.role, text]);
+  live.bus.emit(`aula:${c.id}`, { type: 'message', message: rows[0] });
+  res.json(rows[0]);
 }));
 
 module.exports = router;

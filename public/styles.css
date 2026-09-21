@@ -163,3 +163,13 @@ tbody tr:nth-child(even){background:var(--zebra)}
 .kv b{color:var(--ink-2);font-weight:600}
 .empty{padding:2rem;text-align:center;color:var(--muted)}
 footer{text-align:center;color:var(--muted);font-size:.8rem;padding:2rem 1rem}
+
+/* chat en vivo */
+.chat{display:flex;flex-direction:column;height:min(70vh,560px);overflow:hidden}
+.chatlist{flex:1;overflow-y:auto;padding:.6rem .8rem;display:flex;flex-direction:column;gap:.35rem;background:var(--zebra)}
+.msg{font-size:.88rem;background:#fff;border:1px solid var(--line);border-radius:12px;padding:.35rem .6rem;max-width:92%;align-self:flex-start;word-break:break-word}
+.msg b{color:var(--teal);font-weight:600;margin-right:.3rem}
+.msg.mine{align-self:flex-end;background:var(--teal-soft)}
+.msg.host{border-color:var(--teal-2)}
+.chatform{display:flex;gap:.4rem;padding:.5rem .6rem;border-top:1px solid var(--line)}
+.chatform input{flex:1}

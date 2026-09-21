@@ -1,0 +1,145 @@
+# SG Academia · servidor de medios propio: Jitsi (aulas + soporte) + MediaMTX (transmisión) + Caddy (TLS)
+# Uso: cp .env.example .env && editar && ./install.sh   (o docker compose up -d)
+name: sg-media
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment: [MEET_DOMAIN, LIVE_DOMAIN, LETSENCRYPT_EMAIL]
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./recordings:/srv/recordings:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [web, mediamtx]
+
+  # ---------- MediaMTX: RTMP/SRT/WHIP -> WebRTC (WHEP) + HLS, grabación ----------
+  mediamtx:
+    image: bluenviron/mediamtx:latest-ffmpeg
+    restart: unless-stopped
+    environment:
+      - LMS_URL
+      - LIVE_SECRET
+      - LIVE_DOMAIN
+      - PUBLIC_IP
+      - MTX_AUTHHTTPADDRESS=${LMS_URL}/api/hooks/live/auth
+      - MTX_WEBRTCADDITIONALHOSTS=${PUBLIC_IP},${LIVE_DOMAIN}
+    ports:
+      - "1935:1935"        # RTMP (OBS)
+      - "8890:8890/udp"    # SRT
+      - "8189:8189/udp"    # WebRTC ICE (WHEP/WHIP)
+      - "8189:8189"        # WebRTC ICE TCP fallback
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+      - ./recordings:/recordings
+      - ./hooks:/hooks:ro
+    # solo Caddy habla con 8888 (HLS) y 8889 (WebRTC HTTP): no se exponen
+
+  # ---------- Jitsi Meet (docker-jitsi-meet oficial) ----------
+  web:
+    image: jitsi/web:stable
+    restart: unless-stopped
+    environment:
+      - PUBLIC_URL=https://${MEET_DOMAIN}
+      - ENABLE_AUTH=1
+      - ENABLE_GUESTS=1
+      - AUTH_TYPE=jwt
+      - JWT_APP_ID=${JITSI_APP_ID}
+      - JWT_APP_SECRET=${JITSI_APP_SECRET}
+      - ENABLE_LOBBY=1
+      - ENABLE_PREJOIN_PAGE=1
+      - ENABLE_WELCOME_PAGE=0
+      - DISABLE_DEEP_LINKING=true
+      - DEFAULT_LANGUAGE=es
+      - ENABLE_XMPP_WEBSOCKET=1
+      - ENABLE_HTTP_REDIRECT=0
+      - DISABLE_HTTPS=1
+      - TZ=America/La_Paz
+      - XMPP_DOMAIN=meet.jitsi
+      - XMPP_AUTH_DOMAIN=auth.meet.jitsi
+      - XMPP_GUEST_DOMAIN=guest.meet.jitsi
+      - XMPP_MUC_DOMAIN=muc.meet.jitsi
+      - XMPP_INTERNAL_MUC_DOMAIN=internal-muc.meet.jitsi
+      - XMPP_BOSH_URL_BASE=http://prosody:5280
+      - XMPP_RECORDER_DOMAIN=recorder.meet.jitsi
+      - JICOFO_AUTH_PASSWORD
+      - JVB_AUTH_PASSWORD
+    volumes: [jitsi_web:/config]
+    depends_on: [prosody]
+
+  prosody:
+    image: jitsi/prosody:stable
+    restart: unless-stopped
+    expose: ["5222", "5347", "5280"]
+    environment:
+      - PUBLIC_URL=https://${MEET_DOMAIN}
+      - ENABLE_AUTH=1
+      - ENABLE_GUESTS=1
+      - AUTH_TYPE=jwt
+      - JWT_APP_ID=${JITSI_APP_ID}
+      - JWT_APP_SECRET=${JITSI_APP_SECRET}
+      - JWT_ACCEPTED_ISSUERS=${JITSI_APP_ID}
+      - JWT_ACCEPTED_AUDIENCES=${JITSI_APP_ID}
+      - JWT_ALLOW_EMPTY=0
+      - ENABLE_LOBBY=1
+      - XMPP_DOMAIN=meet.jitsi
+      - XMPP_AUTH_DOMAIN=auth.meet.jitsi
+      - XMPP_GUEST_DOMAIN=guest.meet.jitsi
+      - XMPP_MUC_DOMAIN=muc.meet.jitsi
+      - XMPP_INTERNAL_MUC_DOMAIN=internal-muc.meet.jitsi
+      - XMPP_RECORDER_DOMAIN=recorder.meet.jitsi
+      - JICOFO_AUTH_USER=focus
+      - JICOFO_AUTH_PASSWORD
+      - JVB_AUTH_USER=jvb
+      - JVB_AUTH_PASSWORD
+      - JIGASI_XMPP_PASSWORD
+      - JIBRI_RECORDER_PASSWORD
+      - JIBRI_XMPP_PASSWORD
+      - TZ=America/La_Paz
+    volumes: [jitsi_prosody:/config, jitsi_prosody_plugins:/prosody-plugins-custom]
+
+  jicofo:
+    image: jitsi/jicofo:stable
+    restart: unless-stopped
+    environment:
+      - ENABLE_AUTH=1
+      - AUTH_TYPE=jwt
+      - XMPP_DOMAIN=meet.jitsi
+      - XMPP_AUTH_DOMAIN=auth.meet.jitsi
+      - XMPP_MUC_DOMAIN=muc.meet.jitsi
+      - XMPP_INTERNAL_MUC_DOMAIN=internal-muc.meet.jitsi
+      - XMPP_SERVER=prosody
+      - JICOFO_AUTH_USER=focus
+      - JICOFO_AUTH_PASSWORD
+      - JVB_BREWERY_MUC=jvbbrewery
+      - TZ=America/La_Paz
+    volumes: [jitsi_jicofo:/config]
+    depends_on: [prosody]
+
+  jvb:
+    image: jitsi/jvb:stable
+    restart: unless-stopped
+    ports: ["10000:10000/udp"]
+    environment:
+      - XMPP_AUTH_DOMAIN=auth.meet.jitsi
+      - XMPP_INTERNAL_MUC_DOMAIN=internal-muc.meet.jitsi
+      - XMPP_SERVER=prosody
+      - JVB_AUTH_USER=jvb
+      - JVB_AUTH_PASSWORD
+      - JVB_BREWERY_MUC=jvbbrewery
+      - JVB_PORT=10000
+      - JVB_ADVERTISE_IPS=${PUBLIC_IP}
+      - PUBLIC_URL=https://${MEET_DOMAIN}
+      - TZ=America/La_Paz
+    volumes: [jitsi_jvb:/config]
+    depends_on: [prosody]
+
+volumes:
+  caddy_data: {}
+  caddy_config: {}
+  jitsi_web: {}
+  jitsi_prosody: {}
+  jitsi_prosody_plugins: {}
+  jitsi_jicofo: {}
+  jitsi_jvb: {}

@@ -250,7 +250,7 @@ router.get('/certificates', wrap(async (req, res) => {
 // ---------- Configuración ----------
 router.get('/settings', wrap(async (req, res) => {
   const s = await getSettings(req.tenant.id);
-  res.json({ settings: s, tenant: { id: req.tenant.id, slug: req.tenant.slug, name: req.tenant.name, domain: req.tenant.domain, status: req.tenant.status }, baneco: { configured: baneco.isConfigured(), base: process.env.BANECO_BASE_URL || 'https://apimkt.baneco.com.bo/ApiGateway/' }, bunny: { configured: !!(process.env.BUNNY_LIBRARY_ID && process.env.BUNNY_API_KEY), library: process.env.BUNNY_LIBRARY_ID || null, token_auth: !!process.env.BUNNY_TOKEN_KEY }, live: { jaas: live.jaasReady(), cloudflare: !!process.env.CF_STREAM_CUSTOMER_CODE } });
+  res.json({ settings: s, tenant: { id: req.tenant.id, slug: req.tenant.slug, name: req.tenant.name, domain: req.tenant.domain, status: req.tenant.status }, baneco: { configured: baneco.isConfigured(), base: process.env.BANECO_BASE_URL || 'https://apimkt.baneco.com.bo/ApiGateway/' }, bunny: { configured: !!(process.env.BUNNY_LIBRARY_ID && process.env.BUNNY_API_KEY), library: process.env.BUNNY_LIBRARY_ID || null, token_auth: !!process.env.BUNNY_TOKEN_KEY }, live: { jitsi: live.jitsiProvider(), jitsi_domain: process.env.JITSI_DOMAIN || null, jaas: live.jaasReady(), stream: live.streamReady(), live_domain: live.LIVE().domain || null, cloudflare: !!process.env.CF_STREAM_CUSTOMER_CODE } });
 }));
 router.put('/settings', wrap(async (req, res) => { await setSettings(req.body || {}, req.tenant.id); res.json(await getSettings(req.tenant.id)); }));
 
@@ -298,6 +298,7 @@ router.post('/aulas', wrap(async (req, res) => {
     [b.course_id, b.title, b.description || null, b.starts_at, Number(b.duration_min) || 60, b.mode || 'jitsi', b.join_ref || null]);
   const c = rows[0];
   if (c.mode === 'jitsi') { c.room_name = live.roomName(c); await q('UPDATE classrooms SET room_name=$2 WHERE id=$1', [c.id, c.room_name]); }
+  if (c.mode === 'stream') { c.stream_key = live.newStreamKey(); await q('UPDATE classrooms SET stream_key=$2 WHERE id=$1', [c.id, c.stream_key]); }
   res.json(c);
 }));
 router.put('/aulas/:id', own('classrooms'), wrap(async (req, res) => {
@@ -306,7 +307,23 @@ router.put('/aulas/:id', own('classrooms'), wrap(async (req, res) => {
   for (const f of CLASS_FIELDS) if (b[f] !== undefined) { vals.push(b[f] === '' ? null : b[f]); sets.push(`${f}=$${vals.length}`); }
   if (!sets.length) return res.status(400).json({ error: 'Nada que actualizar' });
   const { rows } = await q(`UPDATE classrooms SET ${sets.join(',')} WHERE id=$1 RETURNING *`, vals);
-  res.json(rows[0]);
+  const c = rows[0];
+  if (c.mode === 'stream' && !c.stream_key) { c.stream_key = live.newStreamKey(); await q('UPDATE classrooms SET stream_key=$2 WHERE id=$1', [c.id, c.stream_key]); }
+  if (c.mode === 'jitsi' && !c.room_name) { c.room_name = live.roomName(c); await q('UPDATE classrooms SET room_name=$2 WHERE id=$1', [c.id, c.room_name]); }
+  res.json(c);
+}));
+// Credenciales de transmisión (OBS / SRT / WHIP) para un aula en modo stream
+router.get('/aulas/:id/stream', own('classrooms'), wrap(async (req, res) => {
+  let c = (await q('SELECT * FROM classrooms WHERE id=$1', [req.params.id])).rows[0];
+  if (c.mode !== 'stream') return res.status(400).json({ error: 'El aula no es de transmisión propia' });
+  if (!c.stream_key) { c.stream_key = live.newStreamKey(); await q('UPDATE classrooms SET stream_key=$2 WHERE id=$1', [c.id, c.stream_key]); }
+  const u = { id: req.user.id, name: req.user.name, email: req.user.email };
+  res.json({ configured: live.streamReady(), domain: live.LIVE().domain, ...live.joinPayload(c, u, true, req.get('host')) });
+}));
+router.post('/aulas/:id/stream/rotate', own('classrooms'), wrap(async (req, res) => {
+  const key = live.newStreamKey();
+  await q('UPDATE classrooms SET stream_key=$2 WHERE id=$1', [req.params.id, key]);
+  res.json({ ok: true });
 }));
 router.delete('/aulas/:id', own('classrooms'), wrap(async (req, res) => { await q('DELETE FROM classrooms WHERE id=$1', [req.params.id]); res.json({ ok: true }); }));
 router.get('/aulas/:id/asistencia', own('classrooms'), wrap(async (req, res) => {
