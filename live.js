@@ -56,7 +56,7 @@ function jitsiPayload(base, room, user, isModerator) {
 }
 
 // ---------- Transmisión propia (MediaMTX) ----------
-const LIVE = () => ({ domain: process.env.LIVE_DOMAIN || '', scheme: process.env.LIVE_SCHEME || 'https', secret: process.env.LIVE_SECRET || '', rtmpPort: process.env.LIVE_RTMP_PORT || '1935', srtPort: process.env.LIVE_SRT_PORT || '8890' });
+const LIVE = () => ({ domain: process.env.LIVE_DOMAIN || '', scheme: process.env.LIVE_SCHEME || 'https', secret: process.env.LIVE_SECRET || '', rtmpHost: process.env.LIVE_RTMP_HOST || process.env.LIVE_DOMAIN || '', rtmpPort: process.env.LIVE_RTMP_PORT || '1935', srtPort: process.env.LIVE_SRT_PORT || '', turn: process.env.LIVE_TURN_URL ? [{ urls: process.env.LIVE_TURN_URL, username: process.env.LIVE_TURN_USER || 'sga', credential: process.env.LIVE_TURN_PASS || process.env.LIVE_SECRET }] : [] });
 const streamReady = () => { const l = LIVE(); return !!(l.domain && l.secret); };
 const streamPath = c => `aula${c.id}`;
 const newStreamKey = () => crypto.randomBytes(12).toString('base64url');
@@ -79,13 +79,14 @@ function streamPayload(base, c, user, isModerator) {
     whep: `${l.scheme}://${dom}/${path}rtc/whep?jwt=${tok}`,
     hls: `${l.scheme}://${dom}/${path}/index.m3u8?jwt=${tok}`,
     hls_query: `jwt=${tok}`,
+    ice: [{ urls: 'stun:stun.l.google.com:19302' }, ...l.turn],
     chat: true, configured: streamReady() };
   if (isModerator) {
     out.publish = {
-      rtmp_server: `rtmp://${dom}:${l.rtmpPort}/${path}`,
+      rtmp_server: `rtmp://${l.rtmpHost}:${l.rtmpPort}/${path}`,
       rtmp_key: `?user=obs&pass=${c.stream_key}`,
-      rtmp_full: `rtmp://${dom}:${l.rtmpPort}/${path}?user=obs&pass=${c.stream_key}`,
-      srt: `srt://${dom}:${l.srtPort}?streamid=publish:${path}:obs:${c.stream_key}`,
+      rtmp_full: `rtmp://${l.rtmpHost}:${l.rtmpPort}/${path}?user=obs&pass=${c.stream_key}`,
+      srt: l.srtPort ? `srt://${l.rtmpHost}:${l.srtPort}?streamid=publish:${path}:obs:${c.stream_key}` : null,
       whip: `${l.scheme}://${dom}/${path}/whip?user=obs&pass=${c.stream_key}`,
     };
   }

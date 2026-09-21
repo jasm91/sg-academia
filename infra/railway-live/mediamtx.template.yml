@@ -1,0 +1,52 @@
+logLevel: info
+api: yes
+apiAddress: 127.0.0.1:9997
+authMethod: http
+authHTTPAddress: ${LMS_URL}/api/hooks/live/auth
+authHTTPExclude:
+  - action: api
+  - action: metrics
+  - action: pprof
+rtsp: yes
+rtspAddress: 127.0.0.1:8554
+rtspTransports: [tcp]
+rtmp: yes
+rtmpAddress: :1935
+srt: no
+moq: no
+hls: yes
+hlsAddress: 127.0.0.1:8888
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsAllowOrigins: ['*']
+webrtc: yes
+webrtcAddress: 127.0.0.1:8889
+webrtcAllowOrigins: ['*']
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcIPsFromInterfaces: yes
+webrtcICEServers2:
+  - url: turn:${TURN_PUBLIC_HOST}:${TURN_PUBLIC_PORT}?transport=tcp
+    username: ${TURN_USER}
+    password: ${TURN_PASS}
+    clientOnly: true
+pathDefaults:
+  record: yes
+  recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordSegmentDuration: 6h
+  recordDeleteAfter: 720h
+  runOnUnavailable: /hooks/event.sh notready
+  runOnRecordSegmentComplete: /hooks/event.sh segment
+paths:
+  ~^aula\d+$:
+    runOnAvailable: /hooks/relay.sh
+    runOnAvailableRestart: yes
+  ~^aula\d+rtc$:
+    record: no
+    runOnAvailable: ''
+    runOnUnavailable: ''
+    runOnRecordSegmentComplete: ''

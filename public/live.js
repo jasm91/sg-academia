@@ -10,8 +10,8 @@
   // ---------- Player de transmisión propia: WebRTC (WHEP) con fallback a HLS ----------
   let pcLive = null, hlsLive = null;
   function stopPlayer() { if (pcLive) { try { pcLive.close(); } catch (_) {} pcLive = null; } if (hlsLive) { try { hlsLive.destroy(); } catch (_) {} hlsLive = null; } }
-  async function playWhep(url, video) {
-    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+  async function playWhep(url, video, ice) {
+    const pc = new RTCPeerConnection({ iceServers: ice && ice.length ? ice : [{ urls: 'stun:stun.l.google.com:19302' }] });
     pc.addTransceiver('video', { direction: 'recvonly' }); pc.addTransceiver('audio', { direction: 'recvonly' });
     pc.ontrack = e => { if (!video.srcObject) video.srcObject = e.streams[0]; video.play().catch(() => {}); };
     const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
@@ -31,7 +31,7 @@
   async function startPlayer(j, video, statusEl) {
     stopPlayer(); video.srcObject = null; video.removeAttribute('src');
     statusEl.textContent = 'Conectando…';
-    try { pcLive = await playWhep(j.whep, video); statusEl.textContent = 'En vivo · WebRTC'; pcLive.onconnectionstatechange = () => { if (['failed', 'disconnected', 'closed'].includes(pcLive && pcLive.connectionState)) statusEl.textContent = 'Reconectando…'; }; return; }
+    try { pcLive = await playWhep(j.whep, video, j.ice); statusEl.textContent = 'En vivo · WebRTC'; pcLive.onconnectionstatechange = () => { if (['failed', 'disconnected', 'closed'].includes(pcLive && pcLive.connectionState)) statusEl.textContent = 'Reconectando…'; }; return; }
     catch (e) { /* sin WebRTC o transmisión no iniciada todavía → HLS */ }
     try { await playHls(j.hls, j.hls_query, video); statusEl.textContent = 'En vivo · HLS'; }
     catch (e) { statusEl.textContent = 'Esperando transmisión…'; }
@@ -53,7 +53,7 @@
     app.innerHTML = `${head}${j.note ? `<div class="alert warn">${esc(j.note)}</div>` : ''}<div class="two" style="grid-template-columns:minmax(0,1fr) 340px"><div>
         <div class="player"><video playsinline autoplay controls></video></div>
         <div class="row tight" style="justify-content:space-between;margin-top:.5rem"><span class="pill teal" id="pstatus">Conectando…</span><button class="btn sm ghost" id="reload">Reconectar</button></div>
-        ${j.publish ? `<div class="card" style="margin-top:1rem"><div class="pad"><b>Transmitir desde OBS / Streamlabs</b><div class="kv small" style="margin-top:.5rem"><b>Servidor</b><span class="mono">${esc(j.publish.rtmp_server)}</span><b>Clave</b><span class="mono">${esc(j.publish.rtmp_key)}</span><b>SRT</b><span class="mono tiny">${esc(j.publish.srt)}</span></div><p class="tiny muted" style="margin-top:.5rem">Apenas OBS conecta, el aula pasa a "En vivo" y los alumnos ven el video. Al cortar, la grabación se publica sola como lección.</p></div></div>` : ''}
+        ${j.publish ? `<div class="card" style="margin-top:1rem"><div class="pad"><b>Transmitir desde OBS / Streamlabs</b><div class="kv small" style="margin-top:.5rem"><b>Servidor</b><span class="mono">${esc(j.publish.rtmp_server)}</span><b>Clave</b><span class="mono">${esc(j.publish.rtmp_key)}</span>${j.publish.srt ? `<b>SRT</b><span class="mono tiny">${esc(j.publish.srt)}</span>` : ''}</div><p class="tiny muted" style="margin-top:.5rem">Apenas OBS conecta, el aula pasa a "En vivo" y los alumnos ven el video. Al cortar, la grabación se publica sola como lección.</p></div></div>` : ''}
       </div>${chatBox()}</div>`;
     const video = app.querySelector('video'), st = $('#pstatus');
     startPlayer(j, video, st);
@@ -213,7 +213,7 @@
       const bg = document.createElement('div'); bg.className = 'modal-bg';
       bg.innerHTML = `<div class="modal"><h2>Transmitir con OBS</h2>${d.configured ? '' : '<div class="alert warn">El servidor de transmisión propio todavía no está configurado (LIVE_DOMAIN / LIVE_SECRET).</div>'}
         <p class="small muted">En OBS → Ajustes → Emisión → Servicio "Personalizado". Los alumnos ven la transmisión en el aula con menos de 1 segundo de retraso.</p>
-        <div class="kv small"><b>Servidor</b><span class="mono">${esc(d.publish.rtmp_server)}</span><b>Clave de retransmisión</b><span class="mono">${esc(d.publish.rtmp_key)}</span><b>SRT (celular/encoder)</b><span class="mono tiny">${esc(d.publish.srt)}</span><b>WHIP (navegador)</b><span class="mono tiny">${esc(d.publish.whip)}</span></div>
+        <div class="kv small"><b>Servidor</b><span class="mono">${esc(d.publish.rtmp_server)}</span><b>Clave de retransmisión</b><span class="mono">${esc(d.publish.rtmp_key)}</span>${d.publish.srt ? `<b>SRT (celular/encoder)</b><span class="mono tiny">${esc(d.publish.srt)}</span>` : ''}<b>WHIP (navegador)</b><span class="mono tiny">${esc(d.publish.whip)}</span></div>
         <div class="row tight" style="justify-content:space-between;margin-top:1rem"><button class="btn sm danger" id="rot">Regenerar clave</button><button class="btn ghost" id="cl">Cerrar</button></div></div>`;
       document.body.appendChild(bg); $('#cl', bg).addEventListener('click', () => bg.remove());
       $('#rot', bg).addEventListener('click', async () => { if (!confirm('¿Regenerar la clave? OBS tendrá que actualizarla.')) return; await api('/admin/aulas/' + b.dataset.obs + '/stream/rotate', { method: 'POST' }); bg.remove(); toast('Clave regenerada'); });

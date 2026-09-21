@@ -1,0 +1,29 @@
+{
+  auto_https off
+  admin off
+}
+:{$PORT} {
+  header Access-Control-Allow-Origin "*"
+  header Access-Control-Allow-Headers "*"
+  header Access-Control-Allow-Methods "GET, POST, PATCH, DELETE, OPTIONS"
+  @options method OPTIONS
+  respond @options 204
+  handle /health {
+    respond "ok" 200
+  }
+  handle_path /rec/* {
+    root * /recordings
+    file_server
+  }
+  @webrtc path_regexp ^/[^/]+/(whep|whip)(/.*)?$
+  handle @webrtc {
+    reverse_proxy 127.0.0.1:8889
+  }
+  @hls path_regexp \.(m3u8|mp4|ts|m4s)$
+  handle @hls {
+    reverse_proxy 127.0.0.1:8888
+  }
+  handle {
+    respond "SG Academia · live" 200
+  }
+}
