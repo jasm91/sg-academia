@@ -37,3 +37,6 @@ Cada academia es un tenant (`tenants`). Se resuelve por header `x-tenant` (slug)
 
 ## Transmisión propia (modo `stream`)
 Instructor → OBS (RTMP/SRT/WHIP) → MediaMTX (VPS) → alumnos por WebRTC (WHEP, <1 s; audio re-codificado a Opus por un relay ffmpeg en `aulaNrtc`) con fallback HLS (~3 s). Publicar exige la clave del aula; ver exige un token de alumno firmado por el LMS (`/api/hooks/live/auth`). Estado en vivo, chat (SSE) y grabación automática publicada como lección (`/api/hooks/live/event`). Prueba local completa: `bash test/stream-e2e.sh` (necesita ffmpeg y un MediaMTX local, ver `infra/`).
+
+## Transmisión propia en Railway (sin VPS)
+Servicio `academia-live` (`infra/railway-live/`): un contenedor con MediaMTX + ffmpeg (relay Opus) + Caddy (un puerto HTTP) + coturn (TURN por TCP) + `mux` (RTMP y TURN comparten el único TCP proxy de Railway). Variables: `LMS_URL`, `LIVE_SECRET`, `LIVE_DOMAIN`, `TURN_USER/PASS`, `TURN_PUBLIC_HOST/PORT` (host:puerto del TCP proxy). En `academia-app`: `LIVE_DOMAIN`, `LIVE_SECRET`, `LIVE_RTMP_HOST/PORT` (TCP proxy), `LIVE_TURN_URL/USER/PASS`. Volumen `/recordings`. Limitaciones: sin UDP (SRT no disponible; WebRTC va por TURN-TCP, con fallback HLS) y Railway cobra egress de video. `LIVE_SELFTEST=aulaN?user=obs&pass=KEY` publica un patrón de prueba (solo para verificar).
