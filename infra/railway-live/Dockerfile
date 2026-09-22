@@ -17,3 +17,4 @@ RUN chmod +x /entrypoint.sh /hooks/*.sh && mkdir -p /recordings
 ENV PORT=8080
 EXPOSE 8080 9000
 ENTRYPOINT ["/entrypoint.sh"]
+# sleep mode habilitado en Railway (se despierta con la primera conexión)
